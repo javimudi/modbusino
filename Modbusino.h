@@ -12,6 +12,8 @@
 #define Modbusino_h
 
 #include <inttypes.h>
+#include <AltSoftSerial.h>
+
 #if defined(ARDUINO) && ARDUINO >= 100
   #include "Arduino.h"
 #else
@@ -29,10 +31,12 @@
 class ModbusinoSlave {
 public:
     ModbusinoSlave(uint8_t slave);
-    void setup(long baud);
+    void setup(long baud, uint8_t config, uint8_t rxPin, uint8_t txPin);
     int loop(uint16_t *tab_reg, uint16_t nb_reg);
 private:
     int _slave;
+    AltSoftSerial _mySerial;
+
 };
 
 #endif

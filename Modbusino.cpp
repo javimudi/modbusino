@@ -9,6 +9,7 @@
  */
 
 #include <inttypes.h>
+#include <AltSoftSerial.h>
 
 #if defined(ARDUINO) && ARDUINO >= 100
   #include "Arduino.h"
@@ -62,8 +63,9 @@ ModbusinoSlave::ModbusinoSlave(uint8_t slave) {
     }
 }
 
-void ModbusinoSlave::setup(long baud) {
-    Serial.begin(baud);
+void ModbusinoSlave::setup(long baud, uint8_t config, uint8_t rxPin, uint8_t txPin) {
+    _mySerial = AltSoftSerial(rxPin,txPin);
+    _mySerial.begin(baud, config);
 }
 
 static int check_integrity(uint8_t *msg, uint8_t msg_length)
@@ -94,14 +96,14 @@ static int build_response_basis(uint8_t slave, uint8_t function,
     return _MODBUS_RTU_PRESET_RSP_LENGTH;
 }
 
-static void send_msg(uint8_t *msg, uint8_t msg_length)
+static void send_msg(AltSoftSerial _mySerial, uint8_t *msg, uint8_t msg_length)
 {
     uint16_t crc = crc16(msg, msg_length);
 
     msg[msg_length++] = crc >> 8;
     msg[msg_length++] = crc & 0x00FF;
 
-    Serial.write(msg, msg_length);
+    _mySerial.write(msg, msg_length);
 }
 
 static uint8_t response_exception(uint8_t slave, uint8_t function,
@@ -118,19 +120,19 @@ static uint8_t response_exception(uint8_t slave, uint8_t function,
     return rsp_length;
 }
 
-static void flush(void)
+static void flush(AltSoftSerial _mySerial)
 {
     uint8_t i = 0;
 
     /* Wait a moment to receive the remaining garbage but avoid getting stuck
      * because the line is saturated */
-    while (Serial.available() && i++ < 10) {
-	Serial.flush();
+    while (_mySerial.available() && i++ < 10) {
+	_mySerial.flush();
 	delay(3);
     }
 }
 
-static int receive(uint8_t *req, uint8_t _slave)
+static int receive(AltSoftSerial _mySerial, uint8_t *req, uint8_t _slave)
 {
     uint8_t i;
     uint8_t length_to_read;
@@ -150,9 +152,9 @@ static int receive(uint8_t *req, uint8_t _slave)
 	/* The timeout is defined to ~10 ms between each bytes.  Precision is
 	   not that important so I rather to avoid millis() to apply the KISS
 	   principle (millis overflows after 50 days, etc) */
-        if (!Serial.available()) {
+        if (!_mySerial.available()) {
 	    i = 0;
-	    while (!Serial.available()) {
+	    while (!_mySerial.available()) {
 		delay(1);
 		if (++i == 10) {
 		    /* Too late, bye */
@@ -161,7 +163,7 @@ static int receive(uint8_t *req, uint8_t _slave)
 	    }
         }
 
-	req[req_index] = Serial.read();
+	req[req_index] = _mySerial.read();
 
         /* Moves the pointer to receive other data */
 	req_index++;
@@ -180,7 +182,7 @@ static int receive(uint8_t *req, uint8_t _slave)
 		    length_to_read = 5;
 		} else {
 		    /* Wait a moment to receive the remaining garbage */
-		    flush();
+		    flush(_mySerial);
 		    if (req[_MODBUS_RTU_SLAVE] == _slave ||
 			req[_MODBUS_RTU_SLAVE] == MODBUS_BROADCAST_ADDRESS) {
 			/* It's for me so send an exception (reuse req) */
@@ -188,7 +190,7 @@ static int receive(uint8_t *req, uint8_t _slave)
 			    _slave, function,
 			    MODBUS_EXCEPTION_ILLEGAL_FUNCTION,
 			    req);
-			send_msg(req, rsp_length);
+			send_msg(_mySerial, req, rsp_length);
 			return - 1 - MODBUS_EXCEPTION_ILLEGAL_FUNCTION;
 		    }
 
@@ -203,7 +205,7 @@ static int receive(uint8_t *req, uint8_t _slave)
 		    length_to_read += req[_MODBUS_RTU_FUNCTION + 5];
 
                 if ((req_index + length_to_read) > _MODBUSINO_RTU_MAX_ADU_LENGTH) {
-		    flush();
+		    flush(_mySerial);
 		    if (req[_MODBUS_RTU_SLAVE] == _slave ||
 			req[_MODBUS_RTU_SLAVE] == MODBUS_BROADCAST_ADDRESS) {
 			/* It's for me so send an exception (reuse req) */
@@ -211,7 +213,7 @@ static int receive(uint8_t *req, uint8_t _slave)
 			    _slave, function,
 			    MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE,
 			    req);
-			send_msg(req, rsp_length);
+			send_msg(_mySerial, req, rsp_length);
 			return - 1 - MODBUS_EXCEPTION_ILLEGAL_FUNCTION;
 		    }
 		    return -1;
@@ -228,7 +230,7 @@ static int receive(uint8_t *req, uint8_t _slave)
 }
 
 
-static void reply(uint16_t *tab_reg, uint16_t nb_reg,
+static void reply(AltSoftSerial _mySerial, uint16_t *tab_reg, uint16_t nb_reg,
 		  uint8_t *req, uint8_t req_length, uint8_t _slave)
 {
     uint8_t slave = req[_MODBUS_RTU_SLAVE];
@@ -277,7 +279,7 @@ static void reply(uint16_t *tab_reg, uint16_t nb_reg,
         }
     }
 
-    send_msg(rsp, rsp_length);
+    send_msg(_mySerial, rsp, rsp_length);
 }
 
 int ModbusinoSlave::loop(uint16_t* tab_reg, uint16_t nb_reg)
@@ -285,10 +287,10 @@ int ModbusinoSlave::loop(uint16_t* tab_reg, uint16_t nb_reg)
     int rc = 0;
     uint8_t req[_MODBUSINO_RTU_MAX_ADU_LENGTH];
 
-    if (Serial.available()) {
-	rc = receive(req, _slave);
+    if (_mySerial.available()) {
+	rc = receive(_mySerial, req, _slave);
 	if (rc > 0) {
-	    reply(tab_reg, nb_reg, req, rc, _slave);
+	    reply(_mySerial, tab_reg, nb_reg, req, rc, _slave);
 	}
     }
 
