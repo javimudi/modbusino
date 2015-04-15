@@ -30,12 +30,13 @@
 
 class ModbusinoSlave {
 public:
-    ModbusinoSlave(uint8_t slave);
+    ModbusinoSlave(uint8_t slave, int MaxPin);
     void setup(long baud, uint8_t config, uint8_t rxPin, uint8_t txPin);
     int loop(uint16_t *tab_reg, uint16_t nb_reg);
 private:
     int _slave;
     AltSoftSerial _mySerial;
+    int _MaxPin;
 
 };
 

@@ -57,15 +57,20 @@ static uint16_t crc16(uint8_t *req, uint8_t req_length)
     return (crc << 8  | crc >> 8);
 }
 
-ModbusinoSlave::ModbusinoSlave(uint8_t slave) {
+ModbusinoSlave::ModbusinoSlave(uint8_t slave, int MaxPin) {
     if (slave >= 0 & slave <= 247) {
 	_slave = slave;
     }
+    _MaxPin = MaxPin;
+
 }
 
 void ModbusinoSlave::setup(long baud, uint8_t config, uint8_t rxPin, uint8_t txPin) {
     _mySerial = AltSoftSerial(rxPin,txPin);
     _mySerial.begin(baud, config);
+    Serial.begin(baud);
+    pinMode(_MaxPin, OUTPUT);
+    digitalWrite(_MaxPin, LOW);    
 }
 
 static int check_integrity(uint8_t *msg, uint8_t msg_length)
@@ -96,14 +101,29 @@ static int build_response_basis(uint8_t slave, uint8_t function,
     return _MODBUS_RTU_PRESET_RSP_LENGTH;
 }
 
-static void send_msg(AltSoftSerial _mySerial, uint8_t *msg, uint8_t msg_length)
+static void send_msg(AltSoftSerial _mySerial, int _MaxPin, uint8_t *msg, uint8_t msg_length)
 {
     uint16_t crc = crc16(msg, msg_length);
 
     msg[msg_length++] = crc >> 8;
     msg[msg_length++] = crc & 0x00FF;
+    
+    // Pin HIGH
+    digitalWrite(_MaxPin, HIGH);
+    delay(500);
+
+
+    for(int i=0;i<msg_length; i++){
+        Serial.print(msg[i]);
+    }
+    Serial.println();
 
     _mySerial.write(msg, msg_length);
+
+    // Pin LOW
+    digitalWrite(_MaxPin, LOW);
+    delayMicroseconds(500);
+
 }
 
 static uint8_t response_exception(uint8_t slave, uint8_t function,
@@ -132,7 +152,7 @@ static void flush(AltSoftSerial _mySerial)
     }
 }
 
-static int receive(AltSoftSerial _mySerial, uint8_t *req, uint8_t _slave)
+static int receive(AltSoftSerial _mySerial, int _MaxPin, uint8_t *req, uint8_t _slave)
 {
     uint8_t i;
     uint8_t length_to_read;
@@ -153,75 +173,73 @@ static int receive(AltSoftSerial _mySerial, uint8_t *req, uint8_t _slave)
 	   not that important so I rather to avoid millis() to apply the KISS
 	   principle (millis overflows after 50 days, etc) */
         if (!_mySerial.available()) {
-	    i = 0;
-	    while (!_mySerial.available()) {
-		delay(1);
-		if (++i == 10) {
-		    /* Too late, bye */
-		    return -1;
-		}
-	    }
+    	    i = 0;
+    	    while (!_mySerial.available()) {
+        		delay(1);
+        		if (++i == 10) {
+        		    /* Too late, bye */
+        		    return -1;
+        		}
+    	    }
         }
 
-	req[req_index] = _mySerial.read();
+        req[req_index] = _mySerial.read();
 
         /* Moves the pointer to receive other data */
-	req_index++;
+
+        req_index++;
 
         /* Computes remaining bytes */
         length_to_read--;
 
         if (length_to_read == 0) {
             switch (step) {
-            case _STEP_FUNCTION:
-                /* Function code position */
-		function = req[_MODBUS_RTU_FUNCTION];
-		if (function == _FC_READ_HOLDING_REGISTERS) {
-		    length_to_read = 4;
-		} else if (function == _FC_WRITE_MULTIPLE_REGISTERS) {
-		    length_to_read = 5;
-		} else {
-		    /* Wait a moment to receive the remaining garbage */
-		    flush(_mySerial);
-		    if (req[_MODBUS_RTU_SLAVE] == _slave ||
-			req[_MODBUS_RTU_SLAVE] == MODBUS_BROADCAST_ADDRESS) {
-			/* It's for me so send an exception (reuse req) */
-			uint8_t rsp_length = response_exception(
-			    _slave, function,
-			    MODBUS_EXCEPTION_ILLEGAL_FUNCTION,
-			    req);
-			send_msg(_mySerial, req, rsp_length);
-			return - 1 - MODBUS_EXCEPTION_ILLEGAL_FUNCTION;
-		    }
+                case _STEP_FUNCTION:
+                    /* Function code position */
 
-		    return -1;
-		}
-		step = _STEP_META;
-		break;
-            case _STEP_META:
-		length_to_read = _MODBUS_RTU_CHECKSUM_LENGTH;
+            		function = req[_MODBUS_RTU_FUNCTION];
 
-		if (function == _FC_WRITE_MULTIPLE_REGISTERS)
-		    length_to_read += req[_MODBUS_RTU_FUNCTION + 5];
+            		if (function == _FC_READ_HOLDING_REGISTERS) {
+            		    length_to_read = 4;
+            		} else if (function == _FC_WRITE_MULTIPLE_REGISTERS) {
+            		    length_to_read = 5;
+            		} else {
+            		    /* Wait a moment to receive the remaining garbage */
+            		    flush(_mySerial);
+            		    if (req[_MODBUS_RTU_SLAVE] == _slave ||
+            			req[_MODBUS_RTU_SLAVE] == MODBUS_BROADCAST_ADDRESS) {
+            			/* It's for me so send an exception (reuse req) */
+            			uint8_t rsp_length = response_exception(
+            			    _slave, function,
+            			    MODBUS_EXCEPTION_ILLEGAL_FUNCTION,
+            			    req);
+            			send_msg(_mySerial, _MaxPin, req, rsp_length);
+            			return - 1 - MODBUS_EXCEPTION_ILLEGAL_FUNCTION;
+            		    }
 
-                if ((req_index + length_to_read) > _MODBUSINO_RTU_MAX_ADU_LENGTH) {
-		    flush(_mySerial);
-		    if (req[_MODBUS_RTU_SLAVE] == _slave ||
-			req[_MODBUS_RTU_SLAVE] == MODBUS_BROADCAST_ADDRESS) {
-			/* It's for me so send an exception (reuse req) */
-			uint8_t rsp_length = response_exception(
-			    _slave, function,
-			    MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE,
-			    req);
-			send_msg(_mySerial, req, rsp_length);
-			return - 1 - MODBUS_EXCEPTION_ILLEGAL_FUNCTION;
-		    }
-		    return -1;
-                }
-                step = _STEP_DATA;
-                break;
-            default:
-                break;
+            		    return -1;
+            		}
+            		step = _STEP_META;
+            		break;
+                case _STEP_META:
+
+    		        length_to_read = _MODBUS_RTU_CHECKSUM_LENGTH;
+
+                    if ((req_index + length_to_read) > _MODBUSINO_RTU_MAX_ADU_LENGTH) {
+            		    flush(_mySerial);
+            		    if (req[_MODBUS_RTU_SLAVE] == _slave || req[_MODBUS_RTU_SLAVE] == MODBUS_BROADCAST_ADDRESS) {
+            			    /* It's for me so send an exception (reuse req) */
+            			    uint8_t rsp_length = response_exception(_slave, function, MODBUS_EXCEPTION_ILLEGAL_DATA_VALUE, req);
+            			    send_msg(_mySerial, _MaxPin, req, rsp_length);
+            			    return - 1 - MODBUS_EXCEPTION_ILLEGAL_FUNCTION;
+            		    }
+        		    
+                        return -1;
+                    }
+                    step = _STEP_DATA;
+                    break;
+                default:
+                    break;
             }
         }
     }
@@ -230,30 +248,30 @@ static int receive(AltSoftSerial _mySerial, uint8_t *req, uint8_t _slave)
 }
 
 
-static void reply(AltSoftSerial _mySerial, uint16_t *tab_reg, uint16_t nb_reg,
+static void reply(AltSoftSerial _mySerial, int _MaxPin, uint16_t *tab_reg, uint16_t nb_reg,
 		  uint8_t *req, uint8_t req_length, uint8_t _slave)
 {
     uint8_t slave = req[_MODBUS_RTU_SLAVE];
     uint8_t function = req[_MODBUS_RTU_FUNCTION];
-    uint16_t address = (req[_MODBUS_RTU_FUNCTION + 1] << 8) +
-	req[_MODBUS_RTU_FUNCTION + 2];
-    uint16_t nb = (req[_MODBUS_RTU_FUNCTION + 3] << 8) +
-	req[_MODBUS_RTU_FUNCTION + 4];
+    uint16_t address = (req[_MODBUS_RTU_FUNCTION + 1] << 8) + req[_MODBUS_RTU_FUNCTION + 2];
+    uint16_t nb = (req[_MODBUS_RTU_FUNCTION + 3] << 8) + req[_MODBUS_RTU_FUNCTION + 4];
     uint8_t rsp[_MODBUSINO_RTU_MAX_ADU_LENGTH];
     uint8_t rsp_length = 0;
 
-    if (slave != _slave &&
-	slave != MODBUS_BROADCAST_ADDRESS) {
-	return;
+    if (slave != _slave && slave != MODBUS_BROADCAST_ADDRESS) {
+	   return;
     }
 
+
     if (address + nb > nb_reg) {
-	rsp_length = response_exception(
-	    slave, function,
-	    MODBUS_EXCEPTION_ILLEGAL_DATA_ADDRESS, rsp);
+        Serial.println("1");
+    	rsp_length = response_exception( slave, function, MODBUS_EXCEPTION_ILLEGAL_DATA_ADDRESS, rsp);
+    
     } else {
         req_length -= _MODBUS_RTU_CHECKSUM_LENGTH;
 
+
+        Serial.println("Lectura");
         if (function == _FC_READ_HOLDING_REGISTERS) {
             uint16_t i;
 
@@ -279,7 +297,7 @@ static void reply(AltSoftSerial _mySerial, uint16_t *tab_reg, uint16_t nb_reg,
         }
     }
 
-    send_msg(_mySerial, rsp, rsp_length);
+    send_msg(_mySerial, _MaxPin, rsp, rsp_length);
 }
 
 int ModbusinoSlave::loop(uint16_t* tab_reg, uint16_t nb_reg)
@@ -287,11 +305,18 @@ int ModbusinoSlave::loop(uint16_t* tab_reg, uint16_t nb_reg)
     int rc = 0;
     uint8_t req[_MODBUSINO_RTU_MAX_ADU_LENGTH];
 
+    reply(_mySerial, _MaxPin, tab_reg, nb_reg, req, rc, _slave);
+
     if (_mySerial.available()) {
-	rc = receive(_mySerial, req, _slave);
-	if (rc > 0) {
-	    reply(_mySerial, tab_reg, nb_reg, req, rc, _slave);
-	}
+
+    	rc = receive(_mySerial, _MaxPin, req, _slave);
+
+    	if (rc > 0) {
+    	    reply(_mySerial, _MaxPin, tab_reg, nb_reg, req, rc, _slave);
+    	}
+    }
+    else {
+        Serial.println("Not data");
     }
 
     /* Returns a positive value if successful,
